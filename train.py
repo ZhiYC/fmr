@@ -19,7 +19,7 @@ def parameters(argv=None):
     parser = argparse.ArgumentParser(description='Feature-metric registration')
 
     # required to check
-    parser.add_argument('-data', '--dataset-type', default='7scene', choices=['modelnet', '7scene'],
+    parser.add_argument('-data', '--dataset-type', default='7scene', choices=['modelnet', '7scene','3dmatch'],
                         metavar='DATASET', help='dataset type (default: 7scene)')
     parser.add_argument('-o', '--outfile', default='./result/fmr', type=str,
                         metavar='BASENAME', help='output filename (prefix)')  # the result: ${BASENAME}_model_best.pth
@@ -101,10 +101,10 @@ def run(args, trainset, testset, action):
     # dataloader
     testloader = torch.utils.data.DataLoader(
         testset,
-        batch_size=args.batch_size, shuffle=False, num_workers=args.workers)
+        batch_size=args.batch_size, shuffle=False, num_workers=args.workers,drop_last=True)
     trainloader = torch.utils.data.DataLoader(
         trainset,
-        batch_size=args.batch_size, shuffle=True, num_workers=args.workers)
+        batch_size=args.batch_size, shuffle=True, num_workers=args.workers,drop_last=True)
 
     # optimizer
     min_loss = float('inf')

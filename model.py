@@ -4,11 +4,14 @@ Creator: Xiaoshui Huang
 Date: 2020-06-19
 """
 import torch
+import gc
 import numpy as np
 from random import sample
 
 import se_math.se3 as se3
 import se_math.invmat as invmat
+from tqdm import tqdm
+from utils import isotropic_transform_error, apply_transform
 
 
 # a global function to flatten a feature
@@ -424,6 +427,7 @@ class FMRTest:
         self.dim_k = args.dim_k
         self.max_iter = 10  # max iteration time for IC algorithm
         self._loss_type = 1  # see. self.compute_loss()
+        self.display = args.display
 
     def create_model(self):
         # Encoder network: extract feature for every point. Nx1024
@@ -436,32 +440,63 @@ class FMRTest:
 
     def evaluate(self, solver, testloader, device):
         solver.eval()
+        sumRRE = 0
+        sumRTE = 0
+        sumRMSE = 0
+        sumRR = 0
         with open(self.filename, 'w') as fout:
             self.eval_1__header(fout)
             with torch.no_grad():
-                for i, data in enumerate(testloader):
-                    p0, p1, igt = data  # igt: p0->p1
-                    # # compute trans from p1->p0
-                    # g = se3.log(igt)  # --> [-1, 6]
-                    # igt = se3.exp(-g)  # [-1, 4, 4]
+                total_iterations = len(testloader)
+                if self.display:
+                    pbar = tqdm(enumerate(testloader), total=total_iterations)
+                else: 
+                    pbar = enumerate(testloader)
+                for i, data in pbar:
+                    if(i == 385):
+                        continue
+                    p0, p1, igt = data
                     p0, p1 = self.ablation_study(p0, p1)
-
-                    p0 = p0.to(device)  # template (1, N, 3)
-                    p1 = p1.to(device)  # source (1, M, 3)
+                    p0 = p0.to(device)  
+                    p1 = p1.to(device)  
                     solver.estimate_t(p0, p1, self.max_iter)
-
-                    est_g = solver.g  # (1, 4, 4)
-
-                    ig_gt = igt.cpu().contiguous().view(-1, 4, 4)  # --> [1, 4, 4]
-                    g_hat = est_g.cpu().contiguous().view(-1, 4, 4)  # --> [1, 4, 4]
+                    est_g = solver.g  
+                    
+                    ig_gt = igt.cpu().contiguous().view(-1, 4, 4)  
+                    g_hat = est_g.cpu().contiguous().view(-1, 4, 4)
 
                     dg = g_hat.bmm(ig_gt)  # if correct, dg == identity matrix.
                     dx = se3.log(dg)  # --> [1, 6] (if corerct, dx == zero vector)
                     dn = dx.norm(p=2, dim=1)  # --> [1]
                     dm = dn.mean()
-
+                    
                     self.eval_1__write(fout, ig_gt, g_hat)
-                    print('test, %d/%d, %f' % (i, len(testloader), dm))
+                    
+                    transform = ig_gt[0]
+                    est_transform = torch.inverse(g_hat[0])
+                    src_points = p0[0]
+                    
+                    rre, rte = isotropic_transform_error(transform, est_transform)
+                    realignment_transform = torch.matmul(torch.inverse(transform), est_transform)
+                    realigned_src_points_f = apply_transform(src_points.cuda(), realignment_transform.cuda())
+                    rmse = torch.linalg.norm(realigned_src_points_f - src_points, dim=1).mean()
+                    recall = torch.lt(rmse, 0.2).float()
+                    
+                    message = f'index: {i} dm: {dm:.8f}, RRE: {rre:.8f}, RTE: {rte:.8f}, RMSE: {rmse:.8f}, RR: {recall:.8f}'
+                    sumRRE += rre
+                    sumRTE += rte
+                    sumRMSE += rmse
+                    sumRR += recall
+                    if self.display:
+                        pbar.set_description(message)
+                    gc.collect()
+                    torch.cuda.empty_cache()
+        total_iterations = total_iterations - 1
+        print(f'Average RRE: {sumRRE / total_iterations:.8f}')
+        print(f'Average RTE: {sumRTE / total_iterations:.8f}')
+        print(f'Average RMSE: {sumRMSE / total_iterations:.8f}')
+        print(f'Average RR: {sumRR / total_iterations:.8f}')
+
 
 
     def ablation_study(self, p0, p1, add_noise=False, add_density=False):

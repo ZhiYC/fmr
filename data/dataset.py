@@ -13,6 +13,7 @@ import numpy as np
 import torch
 import torch.utils.data
 import torchvision
+import pickle
 
 import se_math.se3 as se3
 import se_math.so3 as so3
@@ -104,6 +105,7 @@ class PointCloudDataset(torch.utils.data.Dataset):
         :return:
         """
         path, target = self.samples[index]
+        # print(f'{index}: {path}|{target}')
         sample = self.fileloader(path)
         if self.transform is not None:
             sample = self.transform(sample)
@@ -146,15 +148,15 @@ class ModelNet(PointCloudDataset):
     def __init__(self, dataset_path, train=1, transform=None, classinfo=None, is_uniform_sampling=False):
         # if you would like to uniformly sampled points from mesh, use this function below
         if is_uniform_sampling:
-            loader = mesh.offread_uniformed # used uniformly sampled points.
+            loader = mesh.plyread # used uniformly sampled points.
         else:
-            loader = mesh.offread # use the original vertex in the mesh file
+            loader = mesh.plyread # use the original vertex in the mesh file
         if train > 0:
-            pattern = 'train/*.off'
+            pattern = 'train/*.ply'
         elif train == 0:
-            pattern = 'test/*.off'
+            pattern = 'test/*.ply'
         else:
-            pattern = ['train/*.off', 'test/*.off']
+            pattern = ['train/*.ply', 'test/*.ply']
         super().__init__(dataset_path, pattern, loader, transform, classinfo)
 
 
@@ -179,8 +181,7 @@ class Scene7(PointCloudDataset):
         else:
             pattern = ['*.ply', '*.ply']
         super().__init__(dataset_path, pattern, loader, transform, classinfo)
-
-
+        
 class TransformedDataset(torch.utils.data.Dataset):
     def __init__(self, dataset, rigid_transform, source_modifier=None, template_modifier=None):
         self.dataset = dataset
@@ -206,6 +207,7 @@ class TransformedDataset(torch.utils.data.Dataset):
             p0 = pm
 
         # p0: template, p1: source, igt: transform matrix from p0 to p1
+        # print(f'p0: {p0.shape}, p1: {p1.shape}, igt: {igt.shape}')
         return p0, p1, igt
 
 
@@ -251,6 +253,45 @@ def get_categories(args):
         cinfo = (categories, c_to_idx)
     return cinfo
 
+class ThreeDMatch(torch.utils.data.Dataset):
+    def __init__(self, root, category_file, overlap_threhold=0.3,transform=None, is_uniform_sampling=False):
+        super().__init__()
+        self.root = root
+        self.transform = transform
+        self.loader = mesh.plyread
+        self.overlap_threhold = overlap_threhold
+        with open(category_file, 'rb') as f:
+            self.categories = pickle.load(f)
+        self.samples = self._make_dataset(root)
+    
+    def _make_dataset(self, root):
+        samples = []
+        for category in self.categories:
+            if category['overlap'] < self.overlap_threhold:
+                continue
+            source = os.path.join(root, category['pcd0'])
+            target = os.path.join(root, category['pcd1'])
+            translation = np.zeros((4,4))
+            translation[:3,3] = category['translation']
+            translation[:3,:3] = category['rotation']
+            translation[3,3] = 1
+            samples.append((source, target, translation.astype(np.float32)))
+        print(f'Found {len(samples)} samples')
+        return samples
+        
+    def __len__(self):
+        return len(self.samples)
+    
+    def __getitem__(self, index):
+        src, dst, translation = self.samples[index]
+        source = self.loader(src)
+        target = self.loader(dst)
+        if self.transform is not None:
+            source = self.transform(source)
+            target = self.transform(target)
+        return source, target, translation
+            
+
 
 # global dataset function, could call to get dataset
 def get_datasets(args):
@@ -267,7 +308,7 @@ def get_datasets(args):
         if not os.path.exists(DATA_DIR):
             exit(
                 "Please download ModelNET40 and put it in the data folder, the download link is http://modelnet.cs.princeton.edu/ModelNet40.zip")
-
+           
         if args.mode == 'train':
             # set path and category file for training
             args.dataset_path = './data/ModelNet40'
@@ -338,3 +379,28 @@ def get_datasets(args):
             mag_randomly = True
             testset = TransformedDataset(testdata, transforms.RandomTransformSE3(0.8, mag_randomly))
             return testset
+    elif args.dataset_type == '3dmatch':
+        if args.mode == 'train':
+            args.dataset_path = './data/3dmatch'
+            args.categoryfile = './data/categories/3DMatchTrain.pkl'
+            categorytestfile = './data/categories/3DMatchTest.pkl'
+            transform = torchvision.transforms.Compose([ \
+                transforms.Mesh2Points(), \
+                transforms.OnUnitCube(), \
+                transforms.Resampler(args.num_points), \
+                ])
+            trainst = ThreeDMatch(args.dataset_path, args.categoryfile, overlap_threhold=0.3, transform=transform, is_uniform_sampling=False)
+            testst = ThreeDMatch(args.dataset_path, categorytestfile, overlap_threhold=0.3, transform=transform, is_uniform_sampling=False)
+            return trainst, testst
+        else:
+            args.dataset_path = './data/3dmatch'
+            args.categoryfile = './data/categories/3DMatchTrain.pkl'
+            categorytestfile = './data/categories/3DMatchTest.pkl'
+            transform = torchvision.transforms.Compose([ \
+                transforms.Mesh2Points(), \
+                transforms.OnUnitCube(), \
+                transforms.Resampler(args.num_points), \
+                ])
+            testst = ThreeDMatch(args.dataset_path, categorytestfile, overlap_threhold=0.3, transform=transform, is_uniform_sampling=False)
+            return testst
+            

@@ -55,7 +55,7 @@ def options(argv=None):
     parser.add_argument('--dim-k', default=1024, type=int,
                         metavar='K', help='dim. of the feature vector (default: 1024)')
     # settings for on testing
-    parser.add_argument('-j', '--workers', default=2, type=int,
+    parser.add_argument('-j', '--workers', default=1, type=int,
                         metavar='N', help='number of data loading workers (default: 4)')
     parser.add_argument('--device', default='cuda', type=str,
                         metavar='DEVICE', help='use CUDA if available (default: cpu)')
@@ -66,18 +66,20 @@ def options(argv=None):
                         help='path to the categories to be tested')  # eg. './sampledata/modelnet40_half1.txt'
     parser.add_argument('--mode', default='test', help='program mode. This code is for testing')
     parser.add_argument('--uniformsampling', default=False, type=bool, help='uniform sampling points from the mesh')
-    
+    parser.add_argument('--display', default=False, type=bool, help='uniform sampling points from the mesh')
     args = parser.parse_args(argv)
     return args
 
 
 def main(args):
     # dataset
+    torch.backends.cudnn.enabled = False
     testset = dataset.get_datasets(args)
 
     # testing
     fmr = model.FMRTest(args)
-    run(args, testset, fmr)
+    with torch.no_grad():
+        run(args, testset, fmr)
 
 
 def run(args, testset, action):
